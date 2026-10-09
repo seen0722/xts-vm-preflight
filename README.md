@@ -10,3 +10,5 @@ bash xts-vm-preflight.sh
 ```
 
 結果同時寫到 `./xts-preflight-<hostname>-<時間>.txt`（proxy 帳密已遮罩）。
+
+第 6b 段會實際下載 xTS Insight 的 Python 相依（約 150–250 MB，只放暫存目錄、結束即刪）與兩個 `.deb`（`apt-get download`，不需 sudo、不安裝）。只想快速跑可加 `SKIP_DOWNLOAD=1`。

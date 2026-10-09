@@ -185,6 +185,75 @@ if has git; then
   unset GIT_SSH_COMMAND
 fi
 
+# ---------------------------------------------------------------- 6b. 實際下載測試
+# 只測「首頁回 200」不夠：防火牆可能放行首頁、擋 .whl / .deb 下載。這段真的下載，但只落在暫存目錄，不安裝。
+# SKIP_DOWNLOAD=1 可略過（約 150–250 MB 流量，1–5 分鐘）。
+hdr "6b. 實際下載測試（只下載到暫存目錄，不安裝；結束即刪除）"
+if [ "${SKIP_DOWNLOAD:-0}" = "1" ]; then
+  note "SKIP_DOWNLOAD=1，略過"
+else
+  PY=""
+  for c in /opt/python3.12/bin/python3.12 python3.12 python3.13; do
+    if [ -x "$c" ] || has "$c"; then PY=$c; break; fi
+  done
+  TMPD=$(mktemp -d /tmp/xts-preflight.XXXXXX)
+  if [ -z "$PY" ]; then
+    ng "找不到 Python 3.12+，略過 pip 下載測試"
+  elif ! "$PY" -m pip --version >/dev/null 2>&1; then
+    ng "$PY 沒有 pip 模組"
+  else
+    # xTS Insight backend 的正式相依（版本與 backend/requirements.txt 一致，不含 pytest）
+    cat > "$TMPD/req.txt" <<'REQ'
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+sqlalchemy[asyncio]==2.0.36
+asyncpg==0.30.0
+aiosqlite==0.20.0
+alembic==1.14.1
+lxml==5.3.0
+defusedxml==0.7.1
+python-multipart==0.0.18
+python-dotenv==1.0.1
+pydantic==2.10.4
+pydantic-settings==2.7.1
+httpx==0.28.1
+openai==1.58.1
+scikit-learn==1.6.1
+pandas==2.2.3
+numpy==2.2.1
+openpyxl==3.1.5
+cryptography==44.0.0
+REQ
+    echo "  用 $PY 下載 wheel（--only-binary：不允許從原始碼編譯，等同不需要 apt 的 gcc/dev 套件）..."
+    start=$(date +%s)
+    if timeout 600 "$PY" -m pip download -q --disable-pip-version-check --only-binary=:all: \
+         -r "$TMPD/req.txt" -d "$TMPD/wheels" > "$TMPD/pip.log" 2>&1; then
+      n=$(ls "$TMPD/wheels" | wc -l); sz=$(du -sh "$TMPD/wheels" | awk '{print $1}')
+      ok "pip 實際下載成功：$n 個 wheel、$sz、$(( $(date +%s) - start )) 秒"
+      ls -S "$TMPD/wheels" | head -5 | sed 's/^/      最大: /'
+    else
+      ng "pip 實際下載失敗（$(( $(date +%s) - start )) 秒），pip 錯誤最後幾行："
+      tail -8 "$TMPD/pip.log" | mask | sed 's/^/      /'
+    fi
+  fi
+
+  # apt：apt-get download 不需 sudo、不安裝，只把 .deb 抓到目前目錄；用的是本機 sources.list 與 apt cache
+  if has apt-get; then
+    echo "  apt sources："
+    grep -h -E '^deb ' /etc/apt/sources.list /etc/apt/sources.list.d/*.list 2>/dev/null \
+      | awk '{print $2, $3}' | sort -u | mask | sed 's/^/    /'
+    for pkg in sqlite3 nginx-core; do
+      if (cd "$TMPD" && timeout 120 apt-get download "$pkg" >"$TMPD/apt-$pkg.log" 2>&1); then
+        ok "apt-get download $pkg 成功（$(ls "$TMPD"/${pkg}_*.deb 2>/dev/null | xargs -r du -h | awk '{print $1}')）"
+      else
+        ng "apt-get download $pkg 失敗：$(tail -2 "$TMPD/apt-$pkg.log" | tr '\n' ' ' | mask)"
+      fi
+    done
+    note "apt-get download 用的是上次 apt-get update 的索引；索引太舊時 404 也可能只是版本過期"
+  fi
+  rm -rf "$TMPD"
+fi
+
 # ---------------------------------------------------------------- 7. 摘要
 hdr "摘要"
 echo "  ✅ ${#PASS[@]}   ❌ ${#FAIL[@]}   ℹ️  ${#INFO[@]}"
